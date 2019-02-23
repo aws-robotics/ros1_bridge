@@ -129,8 +129,13 @@ def generate_messages(rospack=None):
         if ros1_msg and ros2_msg:
             mappings.append(Mapping(ros1_msg[0], ros2_msg[0]))
 
+    ros1_msg_idx, ros2_msg_idx = {}, {}
     for ros1_msg, ros2_msg in message_pairs:
-        mapping = determine_field_mapping(ros1_msg, ros2_msg, mapping_rules)
+        ros1_msg_idx[(ros1_msg.package_name, ros1_msg.message_name)] = ros1_msg
+        ros2_msg_idx[(ros2_msg.package_name, ros2_msg.message_name)] = ros2_msg
+
+    for ros1_msg, ros2_msg in message_pairs:
+        mapping = determine_field_mapping(ros1_msg, ros2_msg, mapping_rules, (ros1_msg_idx, ros2_msg_idx))
         if mapping:
             mappings.append(mapping)
 
@@ -570,6 +575,14 @@ def determine_common_services(ros1_srvs, ros2_srvs, mapping_rules):
 
 
 def update_ros1_field_information(ros1_field, package_name):
+    """
+    :type ros1_field: genmsg.msgs.Field
+    :type package_name: string
+
+    :return: ros1_field extended with additional string 
+    attributes `pkg_name` and `msg_name` for their 
+    parent message
+    """
     parts = ros1_field.base_type.split('/')
     assert len(parts) in [1, 2]
     if len(parts) == 1:
@@ -580,7 +593,49 @@ def update_ros1_field_information(ros1_field, package_name):
         ros1_field.msg_name = parts[1]
 
 
-def determine_field_mapping(ros1_msg, ros2_msg, mapping_rules):
+# parent_package_name: use parent_ros1_spec.package instead 
+def get_ros1_projection_fields(ros1_field_selection, parent_ros1_spec, ros1_msg_idx):
+    """
+    :param ros1_field_selection: a string with message field names separated by `.`
+    :param parent_ros1_spec: a genmsg.MsgSpec for a message that contains the first field 
+    in ros1_field_selection
+    :type ros_msg_idx: a dict of (string for package name, string for message_name) to Message
+
+    :return: a tuple of genmsg.msgs.Field objets with additional attributes `pkg_name` 
+    and `msg_name` as defined by `update_ros1_field_information`, corresponding to 
+    traversing `parent_ros1_spec` recursively following `ros1_field_selection`
+
+    :throws: IndexError in case some expected field is not found while traversing 
+    `parent_ros1_spec` recursively following `ros1_field_selection`
+    """
+    projection_fields = []
+    def consume_field(field):
+        update_ros1_field_information(field, parent_ros1_spec.package)
+        projection_fields.append(field)
+
+
+    fields = ros1_field_selection.split('.')    
+    current_field = [f for f in parent_ros1_spec.parsed_fields()
+                       if re.match('^{}([.]?)'.format(f.name), fields[0])][0]
+    consume_field(current_field)
+    for field in fields[1:]:
+        parent_ros1_spec = load_ros1_message(ros1_msg_idx[(current_field.pkg_name, current_field.msg_name)])
+        current_field = [f for f in parent_ros1_spec.parsed_fields() if f.name == field][0]
+        consume_field(current_field)
+
+    return tuple(projection_fields)
+
+def determine_field_mapping(ros1_msg, ros2_msg, mapping_rules, ros_msg_idx):
+    """
+    Return the first mapping object for ros1_msg and ros2_msg found in mapping_rules, 
+    and otherwise defined implicitly, or None if no mapping is found 
+
+    :type ros1_msg: Message
+    :type ros2_msg: Message
+    :type mapping_rules: list of MessageMappingRule
+    :type ros_msg_idx: a pair (ros1_msg_idx, ros2_msg_idx), each one a dict of
+     (string for package name, string for message_name) to Message
+    """
     ros1_spec = load_ros1_message(ros1_msg)
     if not ros1_spec:
         return None
@@ -589,6 +644,7 @@ def determine_field_mapping(ros1_msg, ros2_msg, mapping_rules):
         return None
 
     mapping = Mapping(ros1_msg, ros2_msg)
+    (ros1_msg_idx, _ros2_msg_idx) = ros_msg_idx
 
     # check for manual field mapping rules first
     for rule in mapping_rules:
@@ -601,13 +657,13 @@ def determine_field_mapping(ros1_msg, ros2_msg, mapping_rules):
                 rule.ros2_message_name != ros2_msg.message_name:
             continue
 
-        for ros1_field_name, ros2_field_name in rule.fields_1_to_2.items():
+        for ros1_field_selection, ros2_field_name in rule.fields_1_to_2.items():
             try:
-                ros1_field = \
-                    [f for f in ros1_spec.parsed_fields() if f.name == ros1_field_name][0]
+                ros1_fields = \
+                    get_ros1_projection_fields(ros1_field_selection, ros1_spec, ros1_msg_idx)
             except IndexError:
                 print(
-                    "A manual mapping refers to an invalid field '%s' " % ros1_field_name +
+                    "A manual mapping refers to an invalid field '%s' " % ros1_field_selection +
                     "in the ROS 1 message '%s/%s'" %
                     (rule.ros1_package_name, rule.ros1_message_name),
                     file=sys.stderr)
@@ -622,8 +678,8 @@ def determine_field_mapping(ros1_msg, ros2_msg, mapping_rules):
                     (rule.ros2_package_name, rule.ros2_message_name),
                     file=sys.stderr)
                 continue
-            update_ros1_field_information(ros1_field, ros1_msg.package_name)
-            mapping.add_field_pair(ros1_field, ros2_field)
+            # FIXME remove: update_ros1_field_information(ros1_field, ros1_msg.package_name)
+            # FIXME do analogous for ros1_fields: mapping.add_field_pair(ros1_field, ros2_field)
         return mapping
 
     # apply name based mapping of fields
@@ -654,7 +710,6 @@ def determine_field_mapping(ros1_msg, ros2_msg, mapping_rules):
                 return None
 
     return mapping
-
 
 def load_ros1_message(ros1_msg):
     msg_context = genmsg.MsgContext.create_default()
