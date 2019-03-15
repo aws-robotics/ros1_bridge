@@ -674,8 +674,7 @@ def determine_field_mapping(ros1_msg, ros2_msg, mapping_rules, msg_idx):
                     (rule.ros2_package_name, rule.ros2_message_name),
                     file=sys.stderr)
                 continue
-            # FIXME remove: update_ros1_field_information(ros1_field, ros1_msg.package_name)
-            # FIXME do analogous for ros1_fields: mapping.add_field_pair(ros1_field, ros2_field)
+            mapping.add_field_pair(ros1_selected_fields, ros2_field)
         return mapping
 
     # apply name based mapping of fields
@@ -776,9 +775,16 @@ class Mapping:
         self.fields_2_to_1 = OrderedDict()
         self.depends_on_ros2_messages = set()
 
-    def add_field_pair(self, ros1_field, ros2_field):
-        self.fields_1_to_2[ros1_field] = ros2_field
-        self.fields_2_to_1[ros2_field] = ros1_field
+    def add_field_pair(self, ros1_fields, ros2_field):
+        """
+        :type ros1_fields: either a genmsg.msgs.Field objets with additional attributes `pkg_name` 
+    and `msg_name` as defined by `update_ros1_field_information`, or a tuple of values of that type
+        :type ros2_field: rosidl_adapter.parser.Field
+        """
+        if not type(ros1_fields) is tuple:
+            ros1_fields = (ros1_fields,)
+        self.fields_1_to_2[ros1_fields] = ros2_field
+        self.fields_2_to_1[ros2_field] = ros1_fields
         if ros2_field.type.pkg_name and ros2_field.type.pkg_name != 'builtin_interfaces':
             self.depends_on_ros2_messages.add(
                 Message(ros2_field.type.pkg_name, ros2_field.type.type))
